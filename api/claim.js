@@ -1,13 +1,12 @@
+// api/claim.js
+// Serverless function untuk Vercel
+
 import { ethers } from "ethers";
 
-// ======================
-// Konfigurasi
-// ======================
-const CONTRACT_ADDRESS = "0x811a9c458151b6e7990854013B5FEDB3A5e03608";
-const API_KEY = process.env.API_KEY;
 
-
-//
+// ============
+// WHITELIST
+// ============
 const WHITELIST = [
   "0x348c6a77fd9715ad6747a2cfa8b6b35e87361a84",
   "0xF9BBb61b3AeebA22F2cE75f527F737B329280E3A",
@@ -23,37 +22,43 @@ const WHITELIST = [
   "0x9BAb3F6fFcB6c8B3d229cae1e1DBad2F0151229D",
 ].map(a => a.toLowerCase());
 
+// =====
 // ABI
+// =====
 const ABI = [
   { "inputs": [], "stateMutability": "nonpayable", "type": "constructor" },
-  { "anonymous": false, "inputs": [
+  {
+    "anonymous": false, "inputs": [
       { "indexed": true, "internalType": "address", "name": "recipient", "type": "address" },
       { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" },
       { "indexed": false, "internalType": "uint256", "name": "time", "type": "uint256" }
-    ], "name": "Claimed", "type": "event"
+    ],
+    "name": "Claimed", "type": "event"
   },
-  { "anonymous": false, "inputs": [
+  {
+    "anonymous": false, "inputs": [
       { "indexed": true, "internalType": "address", "name": "from", "type": "address" },
       { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
-    ], "name": "Funded", "type": "event"
+    ],
+    "name": "Funded", "type": "event"
   },
-  { "anonymous": false, "inputs": [
+  {
+    "anonymous": false, "inputs": [
       { "indexed": true, "internalType": "address", "name": "previousOwner", "type": "address" },
       { "indexed": true, "internalType": "address", "name": "newOwner", "type": "address" }
-    ], "name": "OwnerChanged", "type": "event"
+    ],
+    "name": "OwnerChanged", "type": "event"
   },
-  { "anonymous": false, "inputs": [
+  {
+    "anonymous": false, "inputs": [
       { "indexed": true, "internalType": "address", "name": "to", "type": "address" },
       { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
-    ], "name": "Withdrawn", "type": "event"
+    ],
+    "name": "Withdrawn", "type": "event"
   },
   { "inputs": [], "name": "COOLDOWN", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
   { "inputs": [{ "internalType": "address", "name": "newOwner", "type": "address" }], "name": "changeOwner", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
-  { "inputs": [
-      { "internalType": "address", "name": "recipient", "type": "address" },
-      { "internalType": "uint256", "name": "amount", "type": "uint256" }
-    ], "name": "claim", "outputs": [], "stateMutability": "nonpayable", "type": "function"
-  },
+  { "inputs": [{ "internalType": "address", "name": "recipient", "type": "address" }, { "internalType": "uint256", "name": "amount", "type": "uint256" }], "name": "claim", "outputs": [], "stateMutability": "nonpayable", "type": "function" },
   { "inputs": [{ "internalType": "address", "name": "player", "type": "address" }], "name": "getLastClaim", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
   { "inputs": [{ "internalType": "address", "name": "", "type": "address" }], "name": "lastClaim", "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }], "stateMutability": "view", "type": "function" },
   { "inputs": [], "name": "owner", "outputs": [{ "internalType": "address", "name": "", "type": "address" }], "stateMutability": "view", "type": "function" },
@@ -61,125 +66,116 @@ const ABI = [
   { "stateMutability": "payable", "type": "receive" }
 ];
 
-// ======================
-// Helper
-// ======================
-function cors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*"); // atau batasi ke domain game kamu
+// =====================
+// Util: CORS & Helpers
+// =====================
+function setCors(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*"); // kalau mau spesifik, ganti ke domain game kamu
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-api-key");
 }
 
-function badRequest(res, msg, code = 400) {
-  return res.status(code).json({ error: msg });
+function monToWei(mon) {
+  // Asumsi native token 18 desimal. Jika token berbeda, sesuaikan multiplier.
+  // 0.1 MON -> 0.1 * 1e18 wei
+  return ethers.parseUnits(mon.toFixed(18), 18);
 }
 
-function parseAmountToWei(scoreMon) {
-  // Score dikirim dari game dalam MON (0.1 kelipatan, maks 5.0)
-  // Asumsi 18 desimal (seperti ETH).
-  // Clamp safety
-  const n = Number(scoreMon);
-  if (!Number.isFinite(n)) throw new Error("Invalid score");
-  if (n <= 0) throw new Error("Score must be > 0");
-  if (n > 5) throw new Error("Score exceeds max");
-  // Jaga precision: toFixed(1) karena game naik 0.1
-  return ethers.parseUnits(n.toFixed(1), 18);
+function parseAmountFromBody(body) {
+  // Terima dua skenario:
+  // 1) Frontend kirim { wallet, score }  -> convert score (MON) ke amount (wei)
+  // 2) Frontend kirim { recipient, amount } -> pakai langsung amount (wei)
+  if (body && typeof body.score === "number") {
+    const mon = Math.max(0, Math.min(5, body.score)); // clamp 0..5
+    return monToWei(mon);
+  }
+  if (body && typeof body.amount !== "undefined") {
+    // amount sudah dalam wei (string/number)
+    return BigInt(body.amount.toString());
+  }
+  return null;
 }
 
-async function getContract() {
-  const provider = new ethers.JsonRpcProvider(PROVIDER_URL);
-  const signer = new ethers.Wallet(PRIVATE_KEY, provider);
-  return new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
-}
-
-// ======================
-// Handler
-// ======================
+// =====================
+// Serverless Handler
+// =====================
 export default async function handler(req, res) {
-  cors(res);
-  if (req.method === "OPTIONS") return res.status(200).end();
+  setCors(res);
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
 
   try {
     if (req.method !== "POST") {
-      return badRequest(res, "Method not allowed", 405);
+      return res.status(405).json({ error: "Method not allowed" });
     }
 
-    // Verifikasi API key sederhana
+    // API Key check (opsional tapi disarankan)
     const key = req.headers["x-api-key"];
-    if (!key || key !== API_KEY) {
-      return badRequest(res, "Invalid API key", 401);
+    if (API_KEY && key !== API_KEY) {
+      return res.status(401).json({ error: "Unauthorized: invalid API key" });
     }
 
-    const { wallet, recipient, score, amount } = req.body || {};
-    const target = (wallet || recipient || "").toString().trim();
-
-    if (!target) return badRequest(res, "Missing recipient/wallet");
-    if (score === undefined && amount === undefined) {
-      return badRequest(res, "Missing score/amount");
+    const body = req.body || {};
+    // Terima field wallet/recipient (alias)
+    const recipient =
+      (body.wallet && String(body.wallet)) ||
+      (body.recipient && String(body.recipient));
+    if (!recipient) {
+      return res.status(400).json({ error: "Missing wallet/recipient" });
     }
 
-    // Normalisasi address + validasi
-    let recipientAddr;
-    try {
-      recipientAddr = ethers.getAddress(target);
-    } catch {
-      return badRequest(res, "Invalid wallet address");
+    // Whitelist check
+    if (!WHITELIST.includes(recipient.toLowerCase())) {
+      return res.status(403).json({ error: "Wallet ini belum masuk whitelist" });
     }
 
-    // Cek whitelist
-    if (!WHITELIST.includes(recipientAddr.toLowerCase())) {
-      return badRequest(res, "Wallet ini belum masuk whitelist", 403);
+    // Hitung amount
+    const amount = parseAmountFromBody(body);
+    if (!amount || amount <= 0n) {
+      return res.status(400).json({ error: "Invalid amount/score" });
     }
 
-    //
-    let amountWei;
-    if (score !== undefined) {
-      amountWei = parseAmountToWei(score);
-    } else {
-      try {
-        amountWei = BigInt(amount);
-      } catch {
-        return badRequest(res, "Invalid amount");
-      }
-    }
+    // Ethers setup
+    const provider = new ethers.JsonRpcProvider(PROVIDER_URL);
+    const signer = new ethers.Wallet(PRIVATE_KEY, provider);
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
 
-    const contract = await getContract();
-
-    // cooldown
-    const [lastClaim, cooldown] = await Promise.all([
-      contract.getLastClaim(recipientAddr),
+    // Cooldown check (di kontrak + pre-check di backend)
+    const [lastClaimBn, cooldownBn] = await Promise.all([
+      contract.getLastClaim(recipient),
       contract.COOLDOWN()
     ]);
 
     const now = Math.floor(Date.now() / 1000);
-    const nextAllowed = Number(lastClaim) + Number(cooldown);
-    if (now < nextAllowed) {
-      const wait = nextAllowed - now;
-      return badRequest(res, `Cooldown aktif. Coba lagi dalam ${Math.ceil(wait / 60)} menit.`);
+    const last = Number(lastClaimBn);
+    const cd = Number(cooldownBn);
+    const nextAllowed = last + cd;
+
+    if (cd > 0 && now < nextAllowed) {
+      const waitSec = nextAllowed - now;
+      // Tampilkan sisa waktu jam/menit
+      const h = Math.floor(waitSec / 3600);
+      const m = Math.floor((waitSec % 3600) / 60);
+      const s = waitSec % 60;
+      return res.status(400).json({
+        error: `Cooldown aktif. Coba lagi dalam ${h}j ${m}m ${s}d`
+      });
     }
 
-    // Cek
-    const provider = contract.runner.provider;
-    const balance = await provider.getBalance(CONTRACT_ADDRESS);
-    if (balance < amountWei) {
-      return badRequest(res, "Saldo pool tidak cukup, harap isi dana terlebih dahulu");
-    }
-
-    // claim
-    const tx = await contract.claim(recipientAddr, amountWei);
+    // Kirim transaksi claim
+    // (opsional) atur gasLimit manual jika perlu: { gasLimit: 120000 }
+    const tx = await contract.claim(recipient, amount);
     const receipt = await tx.wait();
 
     return res.status(200).json({
-      success: true,
-      txHash: receipt.hash || receipt.transactionHash,
-      recipient: recipientAddr,
-      amountWei: amountWei.toString()
+      ok: true,
+      txHash: receipt.hash
     });
 
   } catch (err) {
-    console.error("claim error:", err);
-    // ethers v6 error format
-    const msg = err?.shortMessage || err?.reason || err?.message || "Unknown error";
+    // Tangani CALL_EXCEPTION dan error umum lain
+    const msg = err?.shortMessage || err?.message || "Unknown error";
     return res.status(500).json({ error: msg });
   }
 }
