@@ -4,7 +4,7 @@ import { ethers } from "ethers";
 // Konfigurasi
 // ======================
 const CONTRACT_ADDRESS = "0x811a9c458151b6e7990854013B5FEDB3A5e03608";
-
+const API_KEY = process.env.API_KEY;
 
 
 //
