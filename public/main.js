@@ -1,7 +1,7 @@
 // -----------------------------
 // Konfigurasi Backend & API Key
 // -----------------------------
-const API_URL = "https://<project-name>.vercel.app/api/claim"; // ganti <project-name> setelah deploy
+const API_URL = "https://game-faucet-backend.vercel.app/api/claim";
 const API_KEY = "mygamefaucet_2025_secret_#98as";
 
 // -----------------------------
